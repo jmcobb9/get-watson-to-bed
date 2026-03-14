@@ -1,0 +1,623 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>🌿 Get Watson to Bed!</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #1a3d1a;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 14px;
+      min-height: 100vh;
+      font-family: 'Comic Sans MS', 'Chalkboard SE', Arial, sans-serif;
+    }
+    h1 {
+      color: #FFD700;
+      text-shadow: 3px 3px #5a2d0c;
+      font-size: 1.8rem;
+      margin-bottom: 10px;
+      text-align: center;
+    }
+    canvas {
+      display: block;
+      border: 6px solid #8B4513;
+      border-radius: 8px;
+      touch-action: none;
+    }
+    #controls {
+      margin-top: 14px;
+      display: grid;
+      grid-template-columns: repeat(3, 66px);
+      grid-template-rows: repeat(2, 66px);
+      gap: 6px;
+    }
+    #controls button {
+      font-size: 30px;
+      border: 3px solid #8B4513;
+      border-radius: 12px;
+      background: #4a7c2d;
+      color: #FFD700;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      user-select: none;
+      -webkit-user-select: none;
+      touch-action: manipulation;
+    }
+    #controls button:active { background: #2d5a1a; transform: scale(0.92); }
+    #btnUp    { grid-column: 2; grid-row: 1; }
+    #btnLeft  { grid-column: 1; grid-row: 2; }
+    #btnDown  { grid-column: 2; grid-row: 2; }
+    #btnRight { grid-column: 3; grid-row: 2; }
+    #restartBtn {
+      margin-top: 12px;
+      padding: 11px 30px;
+      font-size: 18px;
+      font-family: inherit;
+      background: #FFD700;
+      color: #5a2d0c;
+      border: 3px solid #8B4513;
+      border-radius: 12px;
+      cursor: pointer;
+      font-weight: bold;
+    }
+    #restartBtn:active { background: #e6c000; }
+    #hint {
+      margin-top: 8px;
+      color: #90EE90;
+      font-size: 13px;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <h1>🌿 Get Watson to Bed! 🌿</h1>
+  <canvas id="game"></canvas>
+
+  <div id="controls">
+    <button id="btnUp">↑</button>
+    <button id="btnLeft">←</button>
+    <button id="btnDown">↓</button>
+    <button id="btnRight">→</button>
+  </div>
+  <button id="restartBtn">🔄 New Game</button>
+  <p id="hint">Arrow keys or buttons · Collect bones · Reach the bed · Avoid snakes!</p>
+
+  <script>
+  // ─────────────────────────────────────────────────────────────
+  //  Config
+  // ─────────────────────────────────────────────────────────────
+  const TILE  = 48;   // px per tile
+  const GCOLS = 13;   // tile-grid width  (cells use odd indices 1,3,5,7,9,11)
+  const GROWS = 13;   // tile-grid height
+  const MCOLS = 6;    // logical maze cells wide
+  const MROWS = 6;    // logical maze cells tall
+  const HDR   = 64;   // header bar height in px
+
+  const START = { x: 1,  y: 1  };  // hero start (tile col, tile row)
+  const GOAL  = { x: 11, y: 11 }; // bed / finish tile
+
+  // ─────────────────────────────────────────────────────────────
+  //  Level configs  (10 levels, progressively harder)
+  //  extraWallProb: how often dead-end walls are removed (lower = tighter maze)
+  //  snakeCount:    how many snakes are placed
+  //  minSnakeDist:  minimum Manhattan distance from START a snake can appear
+  // ─────────────────────────────────────────────────────────────
+  const LEVEL_CONFIG = [
+    { extraWallProb: 0.62, snakeCount: 2, minSnakeDist: 8 },  // 1  – very open
+    { extraWallProb: 0.56, snakeCount: 2, minSnakeDist: 7 },  // 2
+    { extraWallProb: 0.50, snakeCount: 3, minSnakeDist: 6 },  // 3
+    { extraWallProb: 0.44, snakeCount: 3, minSnakeDist: 6 },  // 4
+    { extraWallProb: 0.38, snakeCount: 4, minSnakeDist: 5 },  // 5  – medium
+    { extraWallProb: 0.32, snakeCount: 4, minSnakeDist: 5 },  // 6
+    { extraWallProb: 0.26, snakeCount: 5, minSnakeDist: 4 },  // 7
+    { extraWallProb: 0.20, snakeCount: 5, minSnakeDist: 4 },  // 8
+    { extraWallProb: 0.14, snakeCount: 6, minSnakeDist: 3 },  // 9
+    { extraWallProb: 0.08, snakeCount: 7, minSnakeDist: 3 },  // 10 – hardest
+  ];
+
+  // ─────────────────────────────────────────────────────────────
+  //  Canvas
+  // ─────────────────────────────────────────────────────────────
+  const canvas = document.getElementById('game');
+  canvas.width  = GCOLS * TILE;          // 624 px
+  canvas.height = GROWS * TILE + HDR;    // 688 px
+  const ctx = canvas.getContext('2d');
+
+  // ─────────────────────────────────────────────────────────────
+  //  Assets — all PNGs sit next to index.html
+  // ─────────────────────────────────────────────────────────────
+  const SRCS = {
+    grass:      'Grass.png',
+    sand:       'Sand.png',
+    rock:       'Rock.png',
+    dirt:       'Dirt.png',
+    cobble:     'Cobblestone.png',
+    wall:       'Wall7.png',
+    tree1:      'Tree1.png',
+    tree2:      'Tree2.png',
+    flowers:    'Flowers.png',
+    hero:       'Hero.png',
+    bone:       'Bone.png',
+    snake:      'Snake.png',
+    bed:        'Bed.png',
+  };
+  // Fallback colours when an image hasn't loaded
+  const FB = {
+    grass:'#5a8c3a', sand:'#d4b870', rock:'#7a7a7a', dirt:'#8B5e3c',
+    cobble:'#c8b97a', wall:'#3d6b2e', tree1:'#1c5e1c', tree2:'#1c5e1c',
+    flowers:'#ff69b4', hero:'#4169e1', bone:'#fff8e1', snake:'#228b22',
+    bed:'#9370db',
+  };
+
+  const imgs = {};
+  function loadImages(cb) {
+    const keys = Object.keys(SRCS);
+    let done = 0;
+    keys.forEach(k => {
+      const img = new Image();
+      img.onload = img.onerror = () => { if (++done === keys.length) cb(); };
+      img.src = SRCS[k];
+      imgs[k] = img;
+    });
+  }
+  function ready(k) { const i=imgs[k]; return i && i.complete && i.naturalWidth>0; }
+
+  // ─────────────────────────────────────────────────────────────
+  //  Maze generation  (recursive back-tracker, 6×6 logical cells)
+  //  Cell (r,c) → tile (2r+1, 2c+1).  Wall tiles = 0, path = 1.
+  // ─────────────────────────────────────────────────────────────
+  function buildMaze(extraWallProb) {
+    const g = Array.from({length: GROWS}, () => new Array(GCOLS).fill(0));
+
+    // Open every cell centre
+    for (let r = 0; r < MROWS; r++)
+      for (let c = 0; c < MCOLS; c++)
+        g[2*r+1][2*c+1] = 1;
+
+    // Carve passages with DFS
+    const vis = Array.from({length: MROWS}, () => new Array(MCOLS).fill(false));
+    const DIRS = [[0,1],[0,-1],[1,0],[-1,0]];
+    function carve(r, c) {
+      vis[r][c] = true;
+      for (const [dr,dc] of [...DIRS].sort(()=>Math.random()-0.5)) {
+        const nr=r+dr, nc=c+dc;
+        if (nr>=0&&nr<MROWS&&nc>=0&&nc<MCOLS&&!vis[nr][nc]) {
+          g[2*r+1+dr][2*c+1+dc] = 1;
+          carve(nr, nc);
+        }
+      }
+    }
+    carve(0, 0);
+
+    // Extra openings → easier, more paths for young kids
+    for (let r=1; r<GROWS-1; r++) {
+      for (let c=1; c<GCOLS-1; c++) {
+        if (g[r][c]===0) {
+          const nb=(g[r-1][c]===1?1:0)+(g[r+1][c]===1?1:0)+
+                   (g[r][c-1]===1?1:0)+(g[r][c+1]===1?1:0);
+          if (nb>=2 && Math.random()<extraWallProb) g[r][c]=1;
+        }
+      }
+    }
+    return g;
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  //  Pick floor-tile variant for each wall (0) tile.
+  //  We use Grass as the base floor everywhere under walls and
+  //  on open path gaps; walkable cobblestone is drawn on top.
+  //  Wall cells get a random floor tile drawn first, then Wall7
+  //  drawn on top — giving the wall a grounded look.
+  // ─────────────────────────────────────────────────────────────
+  const FLOOR_TILES = ['grass','sand','rock','dirt'];
+  function buildFloorMap(g) {
+    // Assign a random floor-tile key to every cell
+    return Array.from({length: GROWS}, (_,r) =>
+      Array.from({length: GCOLS}, (_,c) => FLOOR_TILES[Math.floor(Math.random()*FLOOR_TILES.length)])
+    );
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  //  Decorations (Tree1, Tree2, Flowers) drawn on wall tiles
+  // ─────────────────────────────────────────────────────────────
+  function buildDecorations(g) {
+    const decs = [];
+    const types = ['tree1','tree2','flowers'];
+    for (let r=0; r<GROWS; r++) {
+      for (let c=0; c<GCOLS; c++) {
+        if (g[r][c]!==0) continue;
+        const edge = r===0||r===GROWS-1||c===0||c===GCOLS-1;
+        if (Math.random() < (edge ? 0.62 : 0.20))
+          decs.push({r, c, type: types[Math.floor(Math.random()*types.length)]});
+      }
+    }
+    return decs;
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  //  Utilities
+  // ─────────────────────────────────────────────────────────────
+  function pathPool(g) {
+    const out=[];
+    for (let r=0;r<GROWS;r++)
+      for (let c=0;c<GCOLS;c++)
+        if (g[r][c]===1&&!(r===START.y&&c===START.x)&&!(r===GOAL.y&&c===GOAL.x))
+          out.push({r,c});
+    return out.sort(()=>Math.random()-0.5);
+  }
+  function dist(a,b){ return Math.abs(a.r-b.r)+Math.abs(a.c-b.c); }
+
+  // ─────────────────────────────────────────────────────────────
+  //  BFS reachability check
+  //  Returns a Set of "r,c" keys reachable from (sr,sc) on path
+  //  tiles, treating every position in blockedSet as a wall.
+  // ─────────────────────────────────────────────────────────────
+  function reachableFrom(sr, sc, g, blockedSet) {
+    const key = (r,c) => r+','+c;
+    const visited = new Set([key(sr,sc)]);
+    const queue   = [{r:sr, c:sc}];
+    while (queue.length) {
+      const {r,c} = queue.shift();
+      for (const [dr,dc] of [[0,1],[0,-1],[1,0],[-1,0]]) {
+        const nr=r+dr, nc=c+dc, k=key(nr,nc);
+        if (nr>=0 && nr<GROWS && nc>=0 && nc<GCOLS &&
+            g[nr][nc]===1 && !visited.has(k) && !blockedSet.has(k)) {
+          visited.add(k);
+          queue.push({r:nr,c:nc});
+        }
+      }
+    }
+    return visited;
+  }
+
+  // Returns true if every target {r,c} is reachable from START
+  // with the given snakes treated as impassable.
+  function placementValid(trialSnakes, g, targets) {
+    const blocked = new Set(trialSnakes.map(s => s.r+','+s.c));
+    const reach   = reachableFrom(START.y, START.x, g, blocked);
+    return targets.every(t => reach.has(t.r+','+t.c));
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  //  State
+  // ─────────────────────────────────────────────────────────────
+  let grid, floorMap, decs, bones, snakes;
+  let px, py, score, won;
+  let lives, level, gameOver;
+  let snakeBite = false;   // true while the red-flash animation is running
+  let flashAlpha = 0;      // current red-overlay opacity (0 – 1)
+  let flashRaf  = null;    // requestAnimationFrame handle
+
+  // Full game reset — back to level 1 with 3 fresh lives
+  function init() {
+    lives = 3;
+    startLevel(1);
+  }
+
+  // Set up a single level; lives are NOT touched here
+  function startLevel(n) {
+    level = n;
+    const cfg = LEVEL_CONFIG[n - 1];
+
+    grid     = buildMaze(cfg.extraWallProb);
+    floorMap = buildFloorMap(grid);
+    decs     = buildDecorations(grid);
+    const pool = pathPool(grid);
+
+    bones = pool.slice(0, 5).map(p => ({...p, got: false}));
+
+    // ── Validated snake placement ─────────────────────────────
+    // All bones + the goal must remain reachable from START with
+    // snakes treated as walls.  Retry up to 80 times; if we still
+    // can't fit cfg.snakeCount snakes, drop one and try again so
+    // the level is always beatable.
+    const startPt  = {r: START.y, c: START.x};
+    const required = [...bones, {r: GOAL.y, c: GOAL.x}]; // must stay reachable
+
+    // Prefer candidates far from start; fall back to full pool
+    const farPool  = pool.slice(5).filter(p => dist(p, startPt) > cfg.minSnakeDist);
+    const candPool = farPool.length >= cfg.snakeCount ? farPool : pool.slice(5);
+
+    snakes = [];
+    outer: for (let want = cfg.snakeCount; want >= 1; want--) {
+      for (let t = 0; t < 80; t++) {
+        const trial = [...candPool].sort(() => Math.random()-0.5).slice(0, want);
+        if (placementValid(trial, grid, required)) {
+          snakes = trial;
+          break outer;
+        }
+      }
+    }
+
+    px = START.x; py = START.y; score = 0; won = false; gameOver = false;
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  //  Snake-bite  — red flash + message, then return to start
+  // ─────────────────────────────────────────────────────────────
+  const FLASH_HOLD = 0.55;   // alpha level where the overlay settles and waits
+
+  function triggerSnakeBite() {
+    lives--;
+    gameOver   = lives <= 0;
+    px = START.x; py = START.y;
+    snakeBite  = true;
+    flashAlpha = 0.85;
+    if (flashRaf) cancelAnimationFrame(flashRaf);
+
+    // Quick pulse down to FLASH_HOLD, then stop and wait for a click
+    function settle() {
+      if (flashAlpha > FLASH_HOLD) {
+        flashAlpha -= 0.03;
+        render();
+        flashRaf = requestAnimationFrame(settle);
+      } else {
+        flashAlpha = FLASH_HOLD;   // lock in place — dismissed only by click/tap
+        flashRaf   = null;
+        render();
+      }
+    }
+    render();                      // first frame at full brightness
+    flashRaf = requestAnimationFrame(settle);
+  }
+
+  function dismissSnakeBite() {
+    if (!snakeBite) return;
+    if (flashRaf) { cancelAnimationFrame(flashRaf); flashRaf = null; }
+    snakeBite  = false;
+    flashAlpha = 0;
+    if (gameOver) init();   // full reset — maze, score, lives all restart
+    render();
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  //  Draw helpers
+  // ─────────────────────────────────────────────────────────────
+  function spr(key, col, row) {
+    const x=col*TILE, y=row*TILE+HDR;
+    if (ready(key)) ctx.drawImage(imgs[key], x, y, TILE, TILE);
+    else { ctx.fillStyle=FB[key]||'#888'; ctx.fillRect(x+2,y+2,TILE-4,TILE-4); }
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  //  Render
+  // ─────────────────────────────────────────────────────────────
+  function render() {
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+
+    // ── Header bar ─────────────────────────────────────────────
+    ctx.fillStyle='#174f17';
+    ctx.fillRect(0,0,canvas.width,HDR);
+
+    // Bone icon + counter
+    if (ready('bone')) ctx.drawImage(imgs.bone,8,12,40,40);
+    else { ctx.fillStyle=FB.bone; ctx.fillRect(8,12,40,40); }
+    ctx.fillStyle='#FFD700';
+    ctx.font='bold 26px "Comic Sans MS",Arial';
+    ctx.textAlign='left';
+    ctx.fillText(`× ${score} / 5`, 54, 40);
+
+    // Lives counter — right side of header
+    ctx.textAlign='right';
+    ctx.font='24px Arial';
+    const heartsOn  = '❤️'.repeat(Math.max(0, lives));
+    const heartsOff = '🖤'.repeat(Math.max(0, 3 - lives));
+    ctx.fillText(heartsOn + heartsOff, canvas.width - 8, 40);
+
+    // Level indicator — centre of header
+    ctx.textAlign='center';
+    ctx.fillStyle='#FFD700';
+    ctx.font='bold 22px "Comic Sans MS",Arial';
+    ctx.fillText(`⭐ Level ${level} / 10 ⭐`, canvas.width/2, 40);
+
+    // ── Tiles ──────────────────────────────────────────────────
+    for (let r=0; r<GROWS; r++) {
+      for (let c=0; c<GCOLS; c++) {
+        if (grid[r][c]===1) {
+          // Walkable path: draw cobblestone
+          spr('cobble', c, r);
+        } else {
+          // Wall tile: draw random floor tile first, then Wall7 on top
+          spr(floorMap[r][c], c, r);
+          spr('wall', c, r);
+        }
+      }
+    }
+
+    // ── Decorations ────────────────────────────────────────────
+    for (const d of decs) spr(d.type, d.c, d.r);
+
+    // ── Bed (goal) ─────────────────────────────────────────────
+    spr('bed', GOAL.x, GOAL.y);
+
+    // ── Bones ──────────────────────────────────────────────────
+    for (const b of bones) if (!b.got) spr('bone', b.c, b.r);
+
+    // ── Snakes ─────────────────────────────────────────────────
+    for (const s of snakes) spr('snake', s.c, s.r);
+
+    // ── Hero ───────────────────────────────────────────────────
+    spr('hero', px, py);
+
+    // ── Snake-bite flash overlay ───────────────────────────────
+    if (snakeBite && flashAlpha > 0) {
+      // Red vignette
+      ctx.fillStyle = `rgba(210,0,0,${flashAlpha})`;
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      ctx.textAlign   = 'center';
+      const cx = canvas.width / 2, cy = canvas.height / 2;
+      ctx.lineWidth   = 6;
+      ctx.strokeStyle = '#5a0000';
+
+      ctx.font = 'bold 40px "Comic Sans MS",Arial';
+      ctx.strokeText('🐍 SSSSSSS! 🐍', cx, cy - 42);
+      ctx.fillStyle = '#FFD700';
+      ctx.fillText('🐍 SSSSSSS! 🐍', cx, cy - 42);
+
+      ctx.font = 'bold 30px "Comic Sans MS",Arial';
+      ctx.strokeText('The Snake Got You!', cx, cy + 4);
+      ctx.fillStyle = '#ffffff';
+      ctx.fillText('The Snake Got You!', cx, cy + 4);
+
+      // Only show the prompt once the overlay has settled
+      if (flashAlpha <= FLASH_HOLD + 0.01) {
+        if (gameOver) {
+          ctx.font = 'bold 24px "Comic Sans MS",Arial';
+          ctx.strokeText('💀 No lives left! 💀', cx, cy + 46);
+          ctx.fillStyle = '#ff8080';
+          ctx.fillText('💀 No lives left! 💀', cx, cy + 46);
+          ctx.font = 'bold 18px "Comic Sans MS",Arial';
+          ctx.strokeText('Click or tap to start over', cx, cy + 80);
+          ctx.fillStyle = '#ffd0d0';
+          ctx.fillText('Click or tap to start over', cx, cy + 80);
+        } else {
+          const livesLeft = lives === 1 ? '❤️ 1 life left!' : `❤️❤️ ${lives} lives left!`;
+          ctx.font = 'bold 22px "Comic Sans MS",Arial';
+          ctx.strokeText(livesLeft, cx, cy + 46);
+          ctx.fillStyle = '#ffd0d0';
+          ctx.fillText(livesLeft, cx, cy + 46);
+          ctx.font = 'bold 18px "Comic Sans MS",Arial';
+          ctx.strokeText('Click or tap to continue', cx, cy + 78);
+          ctx.fillStyle = '#ffd0d0';
+          ctx.fillText('Click or tap to continue', cx, cy + 78);
+        }
+      }
+    }
+
+    // ── Win / level-complete overlay ────────────────────────────
+    if (won) {
+      ctx.fillStyle = 'rgba(0,0,0,0.60)';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.textAlign = 'center';
+      ctx.lineWidth = 5;
+      const cx = canvas.width/2, cy = canvas.height/2;
+
+      if (level < 10) {
+        // ── Level complete ──────────────────────────────────────
+        ctx.font = 'bold 46px "Comic Sans MS",Arial';
+        ctx.strokeStyle = '#5a3a00';
+        ctx.strokeText(`⭐ Level ${level} Done! ⭐`, cx, cy - 52);
+        ctx.fillStyle = '#FFD700';
+        ctx.fillText(`⭐ Level ${level} Done! ⭐`, cx, cy - 52);
+
+        ctx.font = 'bold 26px "Comic Sans MS",Arial';
+        ctx.strokeText(`Bones: ${score} / 5   ${'❤️'.repeat(lives)} lives left`, cx, cy + 6);
+        ctx.fillStyle = '#ffffff';
+        ctx.fillText(`Bones: ${score} / 5   ${'❤️'.repeat(lives)} lives left`, cx, cy + 6);
+
+        ctx.font = 'bold 20px "Comic Sans MS",Arial';
+        ctx.strokeText('Tap or press any key for Level ' + (level+1) + '!', cx, cy + 50);
+        ctx.fillStyle = '#b8ffb8';
+        ctx.fillText('Tap or press any key for Level ' + (level+1) + '!', cx, cy + 50);
+      } else {
+        // ── Beat the whole game! ────────────────────────────────
+        ctx.font = 'bold 44px "Comic Sans MS",Arial';
+        ctx.strokeStyle = '#5a3a00';
+        ctx.strokeText('🎉 You Beat the Game! 🎉', cx, cy - 60);
+        ctx.fillStyle = '#FFD700';
+        ctx.fillText('🎉 You Beat the Game! 🎉', cx, cy - 60);
+
+        ctx.font = 'bold 28px "Comic Sans MS",Arial';
+        ctx.strokeText('Watson is in bed! 🛏️', cx, cy - 10);
+        ctx.fillStyle = '#ffffff';
+        ctx.fillText('Watson is in bed! 🛏️', cx, cy - 10);
+
+        ctx.font = 'bold 22px "Comic Sans MS",Arial';
+        ctx.strokeText(`Bones: ${score} / 5   ${'❤️'.repeat(lives)} lives left`, cx, cy + 36);
+        ctx.fillStyle = '#c8ffb0';
+        ctx.fillText(`Bones: ${score} / 5   ${'❤️'.repeat(lives)} lives left`, cx, cy + 36);
+
+        ctx.font = 'bold 19px "Comic Sans MS",Arial';
+        ctx.strokeText('Tap or press any key to play again!', cx, cy + 76);
+        ctx.fillStyle = '#b8ffb8';
+        ctx.fillText('Tap or press any key to play again!', cx, cy + 76);
+      }
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  //  Movement
+  // ─────────────────────────────────────────────────────────────
+  function move(dc, dr) {
+    if (won || snakeBite) return;   // ignore input while flash is playing
+    const nx=px+dc, ny=py+dr;
+    if (nx<0||nx>=GCOLS||ny<0||ny>=GROWS||grid[ny][nx]!==1) return;
+    px=nx; py=ny;
+
+    // Bone pickup
+    for (const b of bones)
+      if (!b.got && b.c===px && b.r===py) { b.got=true; score++; }
+
+    // Snake → red flash, message, then back to start (bones kept)
+    for (const s of snakes) {
+      if (s.c===px && s.r===py) { triggerSnakeBite(); return; }
+    }
+
+    // Goal
+    if (px===GOAL.x && py===GOAL.y) won=true;
+    render();
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  //  Input: keyboard
+  // ─────────────────────────────────────────────────────────────
+  function advanceFromWin() {
+    if (level < 10) { startLevel(level + 1); render(); }
+    else            { init(); render(); }
+  }
+
+  document.addEventListener('keydown', e => {
+    if (snakeBite) { dismissSnakeBite(); e.preventDefault(); return; }
+    if (won)       { advanceFromWin();   e.preventDefault(); return; }
+    switch(e.key) {
+      case 'ArrowUp':    move( 0,-1); e.preventDefault(); break;
+      case 'ArrowDown':  move( 0, 1); e.preventDefault(); break;
+      case 'ArrowLeft':  move(-1, 0); e.preventDefault(); break;
+      case 'ArrowRight': move( 1, 0); e.preventDefault(); break;
+      case 'r': case 'R': init(); render(); break;
+    }
+  });
+
+  canvas.addEventListener('click', () => {
+    if (snakeBite) { dismissSnakeBite(); return; }
+    if (won)       { advanceFromWin();   return; }
+  });
+
+  // ─────────────────────────────────────────────────────────────
+  //  Input: on-screen d-pad
+  // ─────────────────────────────────────────────────────────────
+  [['btnUp',0,-1],['btnDown',0,1],['btnLeft',-1,0],['btnRight',1,0]].forEach(([id,dc,dr])=>{
+    document.getElementById(id).addEventListener('pointerdown', e=>{
+      move(dc,dr); e.preventDefault();
+    });
+  });
+  document.getElementById('restartBtn').addEventListener('click',()=>{ init(); render(); });
+
+  // ─────────────────────────────────────────────────────────────
+  //  Input: touch swipe on canvas
+  // ─────────────────────────────────────────────────────────────
+  let tx0=0, ty0=0;
+  canvas.addEventListener('touchstart', e=>{ tx0=e.touches[0].clientX; ty0=e.touches[0].clientY; e.preventDefault(); },{passive:false});
+  canvas.addEventListener('touchend',   e=>{
+    if (snakeBite) { dismissSnakeBite(); e.preventDefault(); return; }
+    if (won)       { advanceFromWin();   e.preventDefault(); return; }
+    const dx=e.changedTouches[0].clientX-tx0, dy=e.changedTouches[0].clientY-ty0;
+    if (Math.abs(dx)<12&&Math.abs(dy)<12) return;
+    Math.abs(dx)>Math.abs(dy) ? move(dx>0?1:-1,0) : move(0,dy>0?1:-1);
+    e.preventDefault();
+  },{passive:false});
+
+  // ─────────────────────────────────────────────────────────────
+  //  Boot
+  // ─────────────────────────────────────────────────────────────
+  loadImages(()=>{ init(); render(); });
+  </script>
+</body>
+</html>
