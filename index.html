@@ -97,7 +97,7 @@
   const GROWS = 13;   // tile-grid height
   const MCOLS = 6;    // logical maze cells wide
   const MROWS = 6;    // logical maze cells tall
-  const HDR   = 64;   // header bar height in px
+  const HDR   = 88;   // header bar height in px (two rows)
 
   const START = { x: 1,  y: 1  };  // hero start (tile col, tile row)
   const GOAL  = { x: 11, y: 11 }; // bed / finish tile
@@ -345,9 +345,37 @@
   let flashRaf  = null;    // requestAnimationFrame handle
   let snakeTimer = null;   // setInterval handle for moving snakes
 
+  // ── Scoring state ──────────────────────────────────────────────
+  let totalScore, levelStars, lastLevelResult, levelStartTime, displayTimer;
+
+  // ── Scoring helpers ────────────────────────────────────────────
+  function fmt(n) { return Math.round(n).toLocaleString(); }
+
+  function getElapsed() {
+    return Math.max(0, (Date.now() - levelStartTime) / 1000);
+  }
+  function computeTimeBonus() {
+    return Math.max(0, Math.round(1000 - getElapsed() * 10));
+  }
+  function computeStars(base) {   // base = boneScore + timeBonus
+    if (base >= 1500) return 3;
+    if (base >= 800)  return 2;
+    return 1;
+  }
+  function stopDisplayTimer() {
+    if (displayTimer) { clearInterval(displayTimer); displayTimer = null; }
+  }
+  function startDisplayTimer() {
+    stopDisplayTimer();
+    displayTimer = setInterval(() => { if (!won && !snakeBite) render(); }, 500);
+  }
+
   // Full game reset — back to level 1 with 3 fresh lives
   function init() {
-    lives = 3;
+    lives      = 3;
+    totalScore = 0;
+    levelStars = new Array(10).fill(0);
+    lastLevelResult = null;
     startLevel(1);
   }
 
@@ -391,7 +419,10 @@
     snakes.forEach((s, i) => { s.moves = i < cfg.movingSnakes; });
 
     px = START.x; py = START.y; score = 0; won = false; gameOver = false;
+    lastLevelResult = null;
+    levelStartTime  = Date.now();
     startSnakeTimer();
+    startDisplayTimer();
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -401,6 +432,7 @@
 
   function triggerSnakeBite() {
     stopSnakeTimer();          // freeze snakes during the flash overlay
+    stopDisplayTimer();        // freeze time bonus ticking
     lives--;
     gameOver   = lives <= 0;
     px = START.x; py = START.y;
@@ -429,8 +461,13 @@
     if (flashRaf) { cancelAnimationFrame(flashRaf); flashRaf = null; }
     snakeBite  = false;
     flashAlpha = 0;
-    if (gameOver) init();        // full reset — maze, score, lives all restart
-    else          startSnakeTimer();  // resume movement for the current level
+    if (gameOver) {
+      init();                   // full reset — maze, score, lives all restart
+    } else {
+      levelStartTime = Date.now();  // reset the clock for this attempt
+      startSnakeTimer();
+      startDisplayTimer();
+    }
     render();
   }
 
@@ -449,30 +486,50 @@
   function render() {
     ctx.clearRect(0,0,canvas.width,canvas.height);
 
-    // ── Header bar ─────────────────────────────────────────────
+    // ── Header bar (two rows) ──────────────────────────────────
     ctx.fillStyle='#174f17';
     ctx.fillRect(0,0,canvas.width,HDR);
 
-    // Bone icon + counter
-    if (ready('bone')) ctx.drawImage(imgs.bone,8,12,40,40);
-    else { ctx.fillStyle=FB.bone; ctx.fillRect(8,12,40,40); }
-    ctx.fillStyle='#FFD700';
-    ctx.font='bold 26px "Comic Sans MS",Arial';
-    ctx.textAlign='left';
-    ctx.fillText(`× ${score} / 5`, 54, 40);
+    // Separator line between rows
+    ctx.strokeStyle='rgba(255,255,255,0.15)';
+    ctx.lineWidth=1;
+    ctx.beginPath(); ctx.moveTo(6,46); ctx.lineTo(canvas.width-6,46); ctx.stroke();
 
-    // Lives counter — right side of header
-    ctx.textAlign='right';
-    ctx.font='24px Arial';
-    const heartsOn  = '❤️'.repeat(Math.max(0, lives));
-    const heartsOff = '🖤'.repeat(Math.max(0, 3 - lives));
-    ctx.fillText(heartsOn + heartsOff, canvas.width - 8, 40);
-
-    // Level indicator — centre of header
-    ctx.textAlign='center';
+    // ─ Row 1 (baseline ~34) ───────────────────────────────────
+    // Bone icon + counter (left)
+    if (ready('bone')) ctx.drawImage(imgs.bone, 6, 7, 30, 30);
+    else { ctx.fillStyle=FB.bone; ctx.fillRect(6,7,30,30); }
     ctx.fillStyle='#FFD700';
     ctx.font='bold 22px "Comic Sans MS",Arial';
-    ctx.fillText(`⭐ Level ${level} / 10 ⭐`, canvas.width/2, 40);
+    ctx.textAlign='left';
+    ctx.fillText(`× ${score} / 5`, 40, 32);
+
+    // Level indicator (centre)
+    ctx.textAlign='center';
+    ctx.fillStyle='#FFD700';
+    ctx.font='bold 20px "Comic Sans MS",Arial';
+    ctx.fillText(`⭐ Level ${level} / 10 ⭐`, canvas.width/2, 32);
+
+    // Hearts (right)
+    ctx.textAlign='right';
+    ctx.font='20px Arial';
+    const heartsOn  = '❤️'.repeat(Math.max(0, lives));
+    const heartsOff = '🖤'.repeat(Math.max(0, 3 - lives));
+    ctx.fillText(heartsOn + heartsOff, canvas.width - 6, 32);
+
+    // ─ Row 2 (baseline ~72) ───────────────────────────────────
+    // Time bonus (left, colour-coded green→yellow→red)
+    const tb = computeTimeBonus();
+    const tbColour = tb >= 700 ? '#44ee44' : tb >= 400 ? '#FFD700' : '#ff6060';
+    ctx.textAlign='left';
+    ctx.fillStyle=tbColour;
+    ctx.font='bold 17px "Comic Sans MS",Arial';
+    ctx.fillText(`⏱ Bonus: ${fmt(tb)}`, 8, 72);
+
+    // Total score (right)
+    ctx.textAlign='right';
+    ctx.fillStyle='#c8ffb8';
+    ctx.fillText(`🏆 ${fmt(totalScore)} pts`, canvas.width - 8, 72);
 
     // ── Tiles ──────────────────────────────────────────────────
     for (let r=0; r<GROWS; r++) {
@@ -558,52 +615,96 @@
     }
 
     // ── Win / level-complete overlay ────────────────────────────
-    if (won) {
-      ctx.fillStyle = 'rgba(0,0,0,0.60)';
+    if (won && lastLevelResult) {
+      ctx.fillStyle = 'rgba(0,0,0,0.72)';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
       ctx.textAlign = 'center';
       ctx.lineWidth = 5;
-      const cx = canvas.width/2, cy = canvas.height/2;
+      const cx = canvas.width / 2;
+      const r  = lastLevelResult;
 
       if (level < 10) {
         // ── Level complete ──────────────────────────────────────
-        ctx.font = 'bold 46px "Comic Sans MS",Arial';
+        const cy = canvas.height / 2 - 10;
+
+        ctx.font = 'bold 40px "Comic Sans MS",Arial';
         ctx.strokeStyle = '#5a3a00';
-        ctx.strokeText(`⭐ Level ${level} Done! ⭐`, cx, cy - 52);
+        ctx.strokeText(`⭐ Level ${level} Done! ⭐`, cx, cy - 108);
         ctx.fillStyle = '#FFD700';
-        ctx.fillText(`⭐ Level ${level} Done! ⭐`, cx, cy - 52);
+        ctx.fillText(`⭐ Level ${level} Done! ⭐`, cx, cy - 108);
 
-        ctx.font = 'bold 26px "Comic Sans MS",Arial';
-        ctx.strokeText(`Bones: ${score} / 5   ${'❤️'.repeat(lives)} lives left`, cx, cy + 6);
-        ctx.fillStyle = '#ffffff';
-        ctx.fillText(`Bones: ${score} / 5   ${'❤️'.repeat(lives)} lives left`, cx, cy + 6);
+        // Stars centred
+        ctx.font = '54px Arial';
+        ctx.fillStyle = '#FFD700';
+        ctx.fillText('★'.repeat(r.stars), cx - ctx.measureText('☆'.repeat(3-r.stars)).width/2, cy - 46);
+        ctx.fillStyle = '#555555';
+        ctx.fillText('☆'.repeat(3 - r.stars), cx + ctx.measureText('★'.repeat(r.stars)).width/2, cy - 46);
 
+        // Score breakdown
         ctx.font = 'bold 20px "Comic Sans MS",Arial';
-        ctx.strokeText('Tap or press any key for Level ' + (level+1) + '!', cx, cy + 50);
-        ctx.fillStyle = '#b8ffb8';
-        ctx.fillText('Tap or press any key for Level ' + (level+1) + '!', cx, cy + 50);
-      } else {
-        // ── Beat the whole game! ────────────────────────────────
-        ctx.font = 'bold 44px "Comic Sans MS",Arial';
-        ctx.strokeStyle = '#5a3a00';
-        ctx.strokeText('🎉 You Beat the Game! 🎉', cx, cy - 60);
-        ctx.fillStyle = '#FFD700';
-        ctx.fillText('🎉 You Beat the Game! 🎉', cx, cy - 60);
+        ctx.strokeStyle = '#000';
+        ctx.lineWidth = 4;
 
-        ctx.font = 'bold 28px "Comic Sans MS",Arial';
-        ctx.strokeText('Watson is in bed! 🛏️', cx, cy - 10);
-        ctx.fillStyle = '#ffffff';
-        ctx.fillText('Watson is in bed! 🛏️', cx, cy - 10);
-
-        ctx.font = 'bold 22px "Comic Sans MS",Arial';
-        ctx.strokeText(`Bones: ${score} / 5   ${'❤️'.repeat(lives)} lives left`, cx, cy + 36);
-        ctx.fillStyle = '#c8ffb0';
-        ctx.fillText(`Bones: ${score} / 5   ${'❤️'.repeat(lives)} lives left`, cx, cy + 36);
+        const lines = [
+          { text: `🦴 Bones: ${r.bones}/5  ×200 = ${fmt(r.boneScore)} pts`, colour: '#ffe88a' },
+          { text: `⏱ Time Bonus: +${fmt(r.timeBonus)} pts`,                   colour: r.timeBonus >= 700 ? '#88ff88' : r.timeBonus >= 400 ? '#FFD700' : '#ff9999' },
+          { text: `× Level ${level} = ${fmt(r.levelScore)} pts`,               colour: '#ffffff' },
+          { text: `🏆 Total: ${fmt(totalScore)} pts`,                          colour: '#44ffcc' },
+        ];
+        lines.forEach((l, i) => {
+          const ty = cy + 4 + i * 32;
+          ctx.strokeText(l.text, cx, ty);
+          ctx.fillStyle = l.colour;
+          ctx.fillText(l.text, cx, ty);
+        });
 
         ctx.font = 'bold 19px "Comic Sans MS",Arial';
-        ctx.strokeText('Tap or press any key to play again!', cx, cy + 76);
+        const prompt = `Tap or press any key for Level ${level + 1}!`;
+        ctx.strokeText(prompt, cx, cy + 148);
         ctx.fillStyle = '#b8ffb8';
-        ctx.fillText('Tap or press any key to play again!', cx, cy + 76);
+        ctx.fillText(prompt, cx, cy + 148);
+
+      } else {
+        // ── Beat the whole game! ────────────────────────────────
+        const cy = canvas.height / 2 - 20;
+        const totalStars = levelStars.reduce((a, b) => a + b, 0);
+
+        ctx.font = 'bold 38px "Comic Sans MS",Arial';
+        ctx.strokeStyle = '#5a3a00';
+        ctx.strokeText('🎉 Watson is in Bed! 🎉', cx, cy - 118);
+        ctx.fillStyle = '#FFD700';
+        ctx.fillText('🎉 Watson is in Bed! 🎉', cx, cy - 118);
+
+        // Total stars out of 30
+        ctx.font = 'bold 24px "Comic Sans MS",Arial';
+        ctx.strokeStyle = '#000';
+        ctx.lineWidth = 4;
+        ctx.strokeText(`Total Stars: ${totalStars} / 30`, cx, cy - 72);
+        ctx.fillStyle = '#FFD700';
+        ctx.fillText(`Total Stars: ${totalStars} / 30`, cx, cy - 72);
+
+        // Mini star bar — two rows of 5 levels
+        ctx.font = '18px Arial';
+        ctx.fillStyle = '#FFD700';
+        ctx.fillText(levelStars.slice(0,5).map(s=>'★'.repeat(s)+'☆'.repeat(3-s)).join('  '), cx, cy - 36);
+        ctx.fillText(levelStars.slice(5).map(s=>'★'.repeat(s)+'☆'.repeat(3-s)).join('  '), cx, cy - 10);
+
+        ctx.font = 'bold 26px "Comic Sans MS",Arial';
+        ctx.strokeStyle = '#000';
+        ctx.strokeText(`🏆 Grand Total: ${fmt(totalScore)} pts`, cx, cy + 36);
+        ctx.fillStyle = '#44ffcc';
+        ctx.fillText(`🏆 Grand Total: ${fmt(totalScore)} pts`, cx, cy + 36);
+
+        // Last level breakdown
+        ctx.font = 'bold 18px "Comic Sans MS",Arial';
+        ctx.strokeText(`Last Level: ${fmt(r.boneScore)} bones + ${fmt(r.timeBonus)} time × 10 = ${fmt(r.levelScore)}`, cx, cy + 74);
+        ctx.fillStyle = '#ffe88a';
+        ctx.fillText(`Last Level: ${fmt(r.boneScore)} bones + ${fmt(r.timeBonus)} time × 10 = ${fmt(r.levelScore)}`, cx, cy + 74);
+
+        ctx.font = 'bold 19px "Comic Sans MS",Arial';
+        ctx.strokeText('Tap or press any key to play again!', cx, cy + 118);
+        ctx.fillStyle = '#b8ffb8';
+        ctx.fillText('Tap or press any key to play again!', cx, cy + 118);
       }
     }
   }
@@ -627,7 +728,19 @@
     }
 
     // Goal
-    if (px===GOAL.x && py===GOAL.y) { won=true; stopSnakeTimer(); }
+    if (px===GOAL.x && py===GOAL.y) {
+      won = true;
+      stopSnakeTimer();
+      stopDisplayTimer();
+      const timeBonus  = computeTimeBonus();
+      const boneScore  = score * 200;
+      const base       = boneScore + timeBonus;
+      const levelScore = base * level;
+      const stars      = computeStars(base);
+      totalScore      += levelScore;
+      levelStars[level - 1] = stars;
+      lastLevelResult  = { bones: score, boneScore, timeBonus, base, levelScore, stars };
+    }
     render();
   }
 
