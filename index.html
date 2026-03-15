@@ -109,16 +109,16 @@
   //  minSnakeDist:  minimum Manhattan distance from START a snake can appear
   // ─────────────────────────────────────────────────────────────
   const LEVEL_CONFIG = [
-    { extraWallProb: 0.62, snakeCount: 2, minSnakeDist: 8 },  // 1  – very open
-    { extraWallProb: 0.56, snakeCount: 2, minSnakeDist: 7 },  // 2
-    { extraWallProb: 0.50, snakeCount: 3, minSnakeDist: 6 },  // 3
-    { extraWallProb: 0.44, snakeCount: 3, minSnakeDist: 6 },  // 4
-    { extraWallProb: 0.38, snakeCount: 4, minSnakeDist: 5 },  // 5  – medium
-    { extraWallProb: 0.32, snakeCount: 4, minSnakeDist: 5 },  // 6
-    { extraWallProb: 0.26, snakeCount: 5, minSnakeDist: 4 },  // 7
-    { extraWallProb: 0.20, snakeCount: 5, minSnakeDist: 4 },  // 8
-    { extraWallProb: 0.14, snakeCount: 6, minSnakeDist: 3 },  // 9
-    { extraWallProb: 0.08, snakeCount: 7, minSnakeDist: 3 },  // 10 – hardest
+    { extraWallProb: 0.62, snakeCount: 2, minSnakeDist: 8, movingSnakes: 0, snakeMoveMs: 0   },  // 1
+    { extraWallProb: 0.56, snakeCount: 2, minSnakeDist: 7, movingSnakes: 0, snakeMoveMs: 0   },  // 2
+    { extraWallProb: 0.50, snakeCount: 3, minSnakeDist: 6, movingSnakes: 0, snakeMoveMs: 0   },  // 3
+    { extraWallProb: 0.44, snakeCount: 3, minSnakeDist: 6, movingSnakes: 0, snakeMoveMs: 0   },  // 4
+    { extraWallProb: 0.38, snakeCount: 4, minSnakeDist: 5, movingSnakes: 0, snakeMoveMs: 0   },  // 5
+    { extraWallProb: 0.32, snakeCount: 4, minSnakeDist: 5, movingSnakes: 1, snakeMoveMs: 850 },  // 6 – 1 mover
+    { extraWallProb: 0.26, snakeCount: 5, minSnakeDist: 4, movingSnakes: 2, snakeMoveMs: 800 },  // 7 – 2 movers
+    { extraWallProb: 0.20, snakeCount: 5, minSnakeDist: 4, movingSnakes: 3, snakeMoveMs: 720 },  // 8 – 3 movers
+    { extraWallProb: 0.14, snakeCount: 6, minSnakeDist: 3, movingSnakes: 4, snakeMoveMs: 650 },  // 9 – 4 movers
+    { extraWallProb: 0.08, snakeCount: 7, minSnakeDist: 3, movingSnakes: 5, snakeMoveMs: 580 },  // 10 – 5 movers
   ];
 
   // ─────────────────────────────────────────────────────────────
@@ -285,6 +285,56 @@
   }
 
   // ─────────────────────────────────────────────────────────────
+  //  Moving-snake timer helpers
+  // ─────────────────────────────────────────────────────────────
+  function stopSnakeTimer() {
+    if (snakeTimer) { clearInterval(snakeTimer); snakeTimer = null; }
+  }
+
+  function startSnakeTimer() {
+    stopSnakeTimer();
+    const cfg = LEVEL_CONFIG[level - 1];
+    if (cfg.movingSnakes > 0) {
+      snakeTimer = setInterval(moveSnakes, cfg.snakeMoveMs);
+    }
+  }
+
+  function moveSnakes() {
+    if (won || snakeBite) return;
+
+    // Build set of currently occupied tiles so snakes don't overlap
+    const occupied = new Set(snakes.map(s => s.r + ',' + s.c));
+
+    for (const s of snakes) {
+      if (!s.moves) continue;
+
+      // Find valid neighbouring path tiles
+      const valid = [];
+      for (const [dr,dc] of [[0,1],[0,-1],[1,0],[-1,0]]) {
+        const nr = s.r+dr, nc = s.c+dc;
+        if (nr>=0 && nr<GROWS && nc>=0 && nc<GCOLS &&
+            grid[nr][nc] === 1 &&
+            !occupied.has(nr+','+nc) &&
+            !(nr===START.y && nc===START.x) &&   // never block the start
+            !(nr===GOAL.y  && nc===GOAL.x)) {    // never block the goal
+          valid.push([dr, dc]);
+        }
+      }
+      if (valid.length === 0) continue;
+
+      occupied.delete(s.r + ',' + s.c);
+      const [dr, dc] = valid[Math.floor(Math.random() * valid.length)];
+      s.r += dr;
+      s.c += dc;
+      occupied.add(s.r + ',' + s.c);
+
+      // Did the snake just walk onto the player?
+      if (s.r === py && s.c === px) { triggerSnakeBite(); return; }
+    }
+    render();
+  }
+
+  // ─────────────────────────────────────────────────────────────
   //  State
   // ─────────────────────────────────────────────────────────────
   let grid, floorMap, decs, bones, snakes;
@@ -293,6 +343,7 @@
   let snakeBite = false;   // true while the red-flash animation is running
   let flashAlpha = 0;      // current red-overlay opacity (0 – 1)
   let flashRaf  = null;    // requestAnimationFrame handle
+  let snakeTimer = null;   // setInterval handle for moving snakes
 
   // Full game reset — back to level 1 with 3 fresh lives
   function init() {
@@ -302,6 +353,7 @@
 
   // Set up a single level; lives are NOT touched here
   function startLevel(n) {
+    stopSnakeTimer();          // clear any timer from the previous level
     level = n;
     const cfg = LEVEL_CONFIG[n - 1];
 
@@ -335,7 +387,11 @@
       }
     }
 
+    // Tag which snakes move (first movingSnakes in the array)
+    snakes.forEach((s, i) => { s.moves = i < cfg.movingSnakes; });
+
     px = START.x; py = START.y; score = 0; won = false; gameOver = false;
+    startSnakeTimer();
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -344,6 +400,7 @@
   const FLASH_HOLD = 0.55;   // alpha level where the overlay settles and waits
 
   function triggerSnakeBite() {
+    stopSnakeTimer();          // freeze snakes during the flash overlay
     lives--;
     gameOver   = lives <= 0;
     px = START.x; py = START.y;
@@ -372,7 +429,8 @@
     if (flashRaf) { cancelAnimationFrame(flashRaf); flashRaf = null; }
     snakeBite  = false;
     flashAlpha = 0;
-    if (gameOver) init();   // full reset — maze, score, lives all restart
+    if (gameOver) init();        // full reset — maze, score, lives all restart
+    else          startSnakeTimer();  // resume movement for the current level
     render();
   }
 
@@ -440,7 +498,15 @@
     for (const b of bones) if (!b.got) spr('bone', b.c, b.r);
 
     // ── Snakes ─────────────────────────────────────────────────
-    for (const s of snakes) spr('snake', s.c, s.r);
+    for (const s of snakes) {
+      if (s.moves) {
+        // Orange glow under moving snakes so kids can tell them apart
+        const sx = s.c*TILE, sy = s.r*TILE+HDR;
+        ctx.fillStyle = 'rgba(255,120,0,0.55)';
+        ctx.fillRect(sx, sy, TILE, TILE);
+      }
+      spr('snake', s.c, s.r);
+    }
 
     // ── Hero ───────────────────────────────────────────────────
     spr('hero', px, py);
@@ -561,7 +627,7 @@
     }
 
     // Goal
-    if (px===GOAL.x && py===GOAL.y) won=true;
+    if (px===GOAL.x && py===GOAL.y) { won=true; stopSnakeTimer(); }
     render();
   }
 
